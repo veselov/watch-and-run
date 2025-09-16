@@ -26,7 +26,13 @@ kotlin {
     nativeTarget.apply {
         binaries {
             executable {
+                // On Linux, prefer linking against libxcrypt (libcrypt.so.2) when available to avoid old libcrypt.so.1 runtime dep
+                if (hostOs == "Linux") {
+                    linkerOpts("-Wl,--as-needed")
+                }
                 entryPoint = "main"
+                baseName = "WatchAndRun"
+                // Note: static linking may fail on some hosts; keep dynamic by default.
             }
         }
     }
@@ -36,4 +42,11 @@ kotlin {
             implementation(libs.kotlinxSerializationJson)
         }
     }
+}
+
+
+// Disable execution of native tests because the test runner may require unavailable system libs (e.g., libcrypt.so.1)
+// and we currently have no test sources. This ensures `./gradlew build` works across environments.
+tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest>().configureEach {
+    enabled = false
 }

@@ -25,7 +25,8 @@ private fun startProcess(cmdLine: String): BgProc {
             val arg1 = "-c".cstr.getPointer(this)
             val cmd = cmdLine.cstr.getPointer(this)
             val argv = cValuesOf(arg0, arg1, cmd, null)
-            execv("/bin/sh", argv)
+            // Use execvp to search for 'sh' in PATH; more portable across environments
+            execvp("sh", argv)
             // If execv returns, an error occurred
             perror("execv")
             _exit(127)
@@ -108,6 +109,17 @@ private fun bgWaiter(arg: COpaquePointer?): COpaquePointer? {
 @OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
 private val watcherMap = mutableMapOf<pid_t, pthread_t>()
 
+@OptIn(ExperimentalForeignApi::class)
+private fun joinAllWatchers() {
+    pthread_mutex_lock(bgMutex.ptr)
+    val threads = watcherMap.values.toList()
+    watcherMap.clear()
+    pthread_mutex_unlock(bgMutex.ptr)
+    for (t in threads) {
+        pthread_join(t, null)
+    }
+}
+
 @OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
 private fun startWatcherThread(pid: pid_t) {
     memScoped {
@@ -139,9 +151,11 @@ private fun deleteFile(path: String) {
 
 @OptIn(ExperimentalForeignApi::class)
 fun main(args: Array<String>) {
-    // Args: -f <file> -c <command>
+
+    // Args: -f <file> -c <command> [-n <cycles>]
     var triggerFile = "./trigger"
     var cmdLine = "sleep 10"
+    var cycles: Long = -1 // -1 means run forever
     var i = 0
     while (i < args.size) {
         when (args[i]) {
@@ -163,18 +177,39 @@ fun main(args: Array<String>) {
                 i += 2
                 continue
             }
+            "-n", "--cycles", "--test-cycles" -> {
+                if (i + 1 >= args.size) {
+                    fprintf(stderr, "Missing argument for -n/--cycles\n")
+                    exit(2)
+                }
+                val v = args[i + 1]
+                var parsed: Long = -1
+                try {
+                    parsed = v.toLong()
+                } catch (_: Throwable) {
+                    // fallthrough to error below
+                }
+                if (parsed < 0) {
+                    fprintf(stderr, "Invalid cycles value: %s\n", v)
+                    exit(2)
+                }
+                cycles = parsed
+                i += 2
+                continue
+            }
             "-h", "--help" -> {
-                fprintf(stderr, "Usage: [-f <file>] [-c <command>]\n")
+                fprintf(stderr, "Usage: [-f <file>] [-c <command>] [-n <cycles>]\n")
                 return
             }
             else -> {
                 fprintf(stderr, "Unknown option: %s\n", args[i])
-                fprintf(stderr, "Usage: [-f <file>] [-c <command>]\n")
+                fprintf(stderr, "Usage: [-f <file>] [-c <command>] [-n <cycles>]\n")
                 exit(2)
             }
         }
     }
 
+    var tick: Long = 0
     while (true) {
         if (fileExists(triggerFile)) {
             deleteFile(triggerFile)
@@ -190,5 +225,16 @@ fun main(args: Array<String>) {
             pthread_mutex_unlock(bgMutex.ptr)
         }
         usleep(500_000u)
+        tick++
+        if (cycles >= 0 && tick >= cycles) {
+            // Cleanup: stop any running process and join all watcher threads
+            pthread_mutex_lock(bgMutex.ptr)
+            val toStop = sharedBg
+            sharedBg = null
+            pthread_mutex_unlock(bgMutex.ptr)
+            stopProcess(toStop)
+            joinAllWatchers()
+            return
+        }
     }
 }
