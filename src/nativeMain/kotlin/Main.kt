@@ -11,12 +11,12 @@ import kotlin.experimental.ExperimentalNativeApi
 private data class BgProc(var pid: pid_t = 0)
 
 @OptIn(ExperimentalForeignApi::class)
-private fun startProcess(cmdLine: String): BgProc {
+private fun startProcess(cmdLine: String): BgProc? {
     // We'll fork and exec: child runs `/bin/sh -c "$cmdLine"`
     val pid = fork()
     if (pid < 0) {
         perror("fork")
-        return BgProc(0)
+        return null
     }
     if (pid == 0) {
         // Child process

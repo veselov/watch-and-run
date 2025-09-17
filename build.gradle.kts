@@ -12,35 +12,44 @@ repositories {
 
 kotlin {
     val hostOs = System.getProperty("os.name")
-    val isArm64 = System.getProperty("os.arch") == "aarch64"
-    val isMingwX64 = hostOs.startsWith("Windows")
-    val nativeTarget = when {
-        hostOs == "Mac OS X" && isArm64 -> macosArm64("native")
-        hostOs == "Mac OS X" && !isArm64 -> macosX64("native")
-        hostOs == "Linux" && isArm64 -> linuxArm64("native")
-        hostOs == "Linux" && !isArm64 -> linuxX64("native")
-        isMingwX64 -> mingwX64("native")
-        else -> throw GradleException("Host OS is not supported in Kotlin/Native.")
+
+    // Always declare both Linux targets to produce both x86_64 and aarch64 binaries
+    val linuxX64Target = linuxX64("linuxX64")
+    val linuxArm64Target = linuxArm64("linuxArm64")
+
+    // Keep host-specific targets for other OSes (optional but harmless)
+    if (hostOs == "Mac OS X") {
+        // Build both macOS variants when possible
+        macosX64("macosX64")
+        macosArm64("macosArm64")
+    } else if (hostOs.startsWith("Windows")) {
+        mingwX64("mingwX64")
     }
 
-    nativeTarget.apply {
-        binaries {
+    listOf(linuxX64Target, linuxArm64Target).forEach { target ->
+        target.binaries {
             executable {
-                // On Linux, prefer linking against libxcrypt (libcrypt.so.2) when available to avoid old libcrypt.so.1 runtime dep
-                if (hostOs == "Linux") {
-                    linkerOpts("-Wl,--as-needed")
-                }
+                // On Linux, avoid unnecessary DT_NEEDED deps (e.g., libcrypt.so.1)
+                linkerOpts("-Wl,--as-needed")
                 entryPoint = "main"
                 baseName = "WatchAndRun"
-                // Note: static linking may fail on some hosts; keep dynamic by default.
             }
         }
     }
 
     sourceSets {
+        val commonMain = sourceSets.getByName("commonMain")
+        // Wire nativeMain to commonMain to keep existing sources under nativeMain
+        val nativeMain = sourceSets.maybeCreate("nativeMain")
+        val linuxX64Main = sourceSets.getByName("linuxX64Main")
+        val linuxArm64Main = sourceSets.getByName("linuxArm64Main")
+
         nativeMain.dependencies {
             implementation(libs.kotlinxSerializationJson)
         }
+        // Keep existing sources under nativeMain; link them to platform source sets
+        linuxX64Main.dependsOn(nativeMain)
+        linuxArm64Main.dependsOn(nativeMain)
     }
 }
 
